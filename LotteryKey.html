@@ -1,0 +1,436 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>LotteryKey比特币沉睡地址私钥碰撞生成器2025HTML版</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="https://cdn.staticfile.org/elliptic/6.5.4/elliptic.min.js"></script>
+<script src="https://cdn.staticfile.org/crypto-js/4.1.1/crypto-js.min.js"></script>
+<style>
+    body {font-family:'Segoe UI',Arial,sans-serif;background:linear-gradient(135deg,#1e3c72,#2a5298);color:#fff;margin:0;padding:20px;min-height:100vh;}
+    .container {max-width:1000px;margin:40px auto;background:rgba(255,255,255,0.97);color:#222;border-radius:16px;padding:30px;box-shadow:0 20px 50px rgba(0,0,0,0.4);}
+    h1 {text-align:center;color:#1e3c72;margin-bottom:10px;}
+    .card {background:#fff;padding:25px;border-radius:14px;margin:20px 0;box-shadow:0 6px 20px rgba(0,0,0,0.1);}
+    input,select {padding:14px;font-size:16px;border-radius:10px;border:1px solid #ccc;width:100%;box-sizing:border-box;margin:10px 0;}
+    button {padding:14px 28px;font-size:16px;border:none;border-radius:10px;cursor:pointer;font-weight:bold;margin:8px;}
+    button:hover:not(:disabled){transform:translateY(-3px);box-shadow:0 6px 15px rgba(0,0,0,0.2);}
+    #startBtn{background:#00c853;color:white;} #stopBtn{background:#ff1744;color:white;}
+    .mode-switch {display:flex;gap:20px;justify-content:center;margin:30px 0;}
+    .mode-btn {flex:1;padding:20px;border-radius:12px;font-size:1.2em;font-weight:bold;transition:all 0.3s;}
+    .mode-btn.active {background:#1976d2;color:white;transform:scale(1.05);box-shadow:0 10px 25px rgba(25,118,210,0.4);}
+    .mode-btn.inactive {background:#e0e0e0;color:#666;}
+    .stats {background:#e8f5e8;padding:18px;border-radius:12px;margin:20px 0;font-size:1.1em;}
+    .found {background:#fff8e1;padding:20px;border-radius:12px;margin:15px 0;border-left:6px solid #ff9800;box-shadow:0 4px 15px rgba(0,0,0,0.1);}
+    .highlight {font-family:monospace;background:#f0f0f0;padding:6px 10px;border-radius:6px;font-weight:bold;}
+    .balance-positive {color:#1b5e20;font-weight:bold;font-size:1.3em;}
+    .old-style {font-style:italic;color:#8B4513;font-weight:bold;}
+    .alarm {background:#ffebee;padding:20px;border-radius:12px;margin:15px 0;border-left:6px solid #f44336;box-shadow:0 4px 15px rgba(0,0,0,0.1);}
+</style>
+</head>
+<body>
+<div class="container">
+    <h1>LotteryKey比特币沉睡地址私钥碰撞生成器2025HTML版</h1>
+    <p style="text-align:center;color:#555;font-size:1.2em;">LotteryKey · 老鲸模拟模式</p>
+
+    <div class="mode-switch">
+        <button class="mode-btn active" id="modePrefix" onclick="switchMode('prefix')">目标地址生成模式</button>
+        <button class="mode-btn inactive" id="modeOld" onclick="switchMode('old')">2009老鲸批量模拟模式</button>
+    </div>
+
+    <div class="card" id="prefixMode">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;">
+            <div><label>前缀（支持正则）</label><input type="text" id="prefix" value="1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa" placeholder="例：1Grok"></div>
+            <div><label>后缀（支持正则）</label><input type="text" id="suffix" placeholder="例：1LdRcdxfbSnmCYYNdeYpUnztiYzVfBEQeC"></div>
+        </div>
+    </div>
+
+    <div class="card" id="oldMode" style="display:none;text-align:center;">
+        <p class="old-style" style="font-size:1.4em;">
+            真实 2009～2010 沉睡巨鲸模拟 自动查询余额<br>
+            未压缩公钥 + 极低私钥 + 经典开头高概率出现
+        </p>
+        <p style="color:#666;margin-top:15px;">每生成一个就显示，全部可直接导入 Electrum</p>
+    </div>
+
+    <div style="text-align:center;margin:40px 0;">
+        <button id="startBtn" onclick="startGenerating()">开始生成</button>
+        <button id="stopBtn" onclick="stopGenerating()" disabled>停止生成</button>
+        <button onclick="clearResults()">清空结果</button>
+    </div>
+
+    <div class="stats">
+        <strong>状态：</strong> <span id="status">就绪</span><br>
+        已尝试: <span id="attempts">0</span> 次 | 
+        运行: <span id="time">0</span>s | 
+        速度: <span id="speed">0</span> keys/s
+    </div>
+
+    <div id="results"></div>
+</div>
+
+<script>
+// ==================== 核心变量 ====================
+let isGenerating = false, attempts = 0, startTime = 0, rafId, mode = 'prefix';
+let found = [];
+
+// ==================== 报警地址列表 ====================
+const alarmAddresses = new Set([
+    '1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa',
+    '1FeexV6bAHb8ybZjqQMjJrcCrHGW9sb6uF',
+    '1LdRcdxfbSnmCYYNdeYpUnztiYzVfBEQeC',
+    '12tLsExYUbg9PQMg1i7W8f2C7k8L4M7q3xj2me',
+    '1KbrS1D5D9M2jX4Y5Z6A7B8C9D0E1F2G3H4I5J6K',
+    '1GcCK3q1n1q2p3r4s5t6u7v8w9x0y1z2a3b4c5d6e',
+    '17Q7tuG2JwFFU9rXVj3uZqRtioH3mx2Jad',
+    '1K6xGMUbs6ZTXBnhw1pippqwK6wjBWtNpL',
+    '15ANYzzCp5BFHcCnVFzXqyibpzgPLWaD8b',
+    '18ywPwj39nGjqBrQJSzZVq2izR12MDpDr8',
+    '1HLoD9E4SDFFPDiYfNYnkBLQ85Y51J3Zb1'
+]);
+
+// ==================== 模式切换 ====================
+function switchMode(m) {
+    mode = m;
+    document.getElementById('modePrefix').className = mode==='prefix' ? 'mode-btn active' : 'mode-btn inactive';
+    document.getElementById('modeOld').className = mode==='old' ? 'mode-btn active' : 'mode-btn inactive';
+    document.getElementById('prefixMode').style.display = mode==='prefix' ? 'block' : 'none';
+    document.getElementById('oldMode').style.display = mode==='old' ? 'block' : 'none';
+}
+
+// ==================== 生成循环 ====================
+function generateLoop() {
+    if (!isGenerating) return;
+
+    const ec = new elliptic.ec('secp256k1');
+    let privHex, address, wif, oldMeta = null;
+
+    if (mode === 'old') {
+        // 2009 老鲸模拟模式,强制未压缩公钥 + 低私钥偏好
+        const legacy = buildOldModeResult(ec);
+        privHex = legacy.privHex;
+        address = legacy.uncompressed.address;  // 使用未压缩地址
+        wif = legacy.uncompressed.wif;  // 使用未压缩 WIF
+        oldMeta = {
+            addressCompressed: legacy.compressed.address,
+            addressUncompressed: legacy.uncompressed.address,
+            wifCompressed: legacy.compressed.wif,
+            wifUncompressed: legacy.uncompressed.wif
+        };
+    } else {
+        // 目标地址生成模式：限制为未压缩公钥和老式地址
+        const modern = deriveResultFromKeyPair(ec.genKeyPair(), false);
+        privHex = modern.privHex;
+        address = modern.address;
+        wif = modern.wif;
+    }
+
+    // ==================== 报警检查 ====================
+    if (alarmAddresses.has(address)) {
+        alert(`🚨 警报！碰撞到知名沉睡地址: ${address}\n私钥 WIF: ${wif}\n生成已立即停止！`);
+        const item = {address, wif, hex: privHex, isOld: mode === 'old', isAlarm: true};
+        if (oldMeta) Object.assign(item, oldMeta);
+        found.push(item);
+        addFound(item, true); // 传入 isAlarm 参数
+        stopGenerating();
+        return; // 停止继续生成
+    }
+
+    attempts++;
+    document.getElementById('attempts').textContent = attempts.toLocaleString();
+
+    let match = (mode === 'old');
+    if (mode === 'prefix') {
+        const p = document.getElementById('prefix').value.trim();
+        const s = document.getElementById('suffix').value.trim();
+        if ((p && new RegExp('^' + p).test(address)) || (s && new RegExp(s + '$').test(address))) match = true;
+    }
+
+    if (match) {
+        const item = {address, wif, hex: privHex, isOld: mode === 'old'};
+        if (oldMeta) Object.assign(item, oldMeta);
+        found.push(item);
+        addFound(item);
+    }
+
+    const now = Date.now();
+    if (now - (window.lastSpeedUpdate || 0) > 1000) {
+        document.getElementById('speed').textContent = Math.round(attempts / ((now - startTime) / 1000));
+        window.lastSpeedUpdate = now;
+    }
+    document.getElementById('time').textContent = ((now - startTime) / 1000).toFixed(1);
+
+    rafId = requestAnimationFrame(generateLoop);
+}
+
+// ==================== 全部工具函数 ====================
+const ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+
+function base58Encode(bytes) {
+    let num = BigInt('0x' + Array.from(bytes).map(b => b.toString(16).padStart(2,'0')).join(''));
+    let str = '';
+    while (num > 0n) { str = ALPHABET[Number(num % 58n)] + str; num = num / 58n; }
+    for (let i = 0; i < bytes.length && bytes[i] === 0; i++) str = '1' + str;
+    return str;
+}
+
+function base58Decode(str) {
+    let num = 0n;
+    let leadingZeros = 0;
+    // 计算前导零的数量（base58中'1'代表0）
+    for (let i = 0; i < str.length; i++) {
+        if (str[i] === '1') {
+            leadingZeros++;
+        } else {
+            break;
+        }
+    }
+    // 解码剩余部分
+    for (let i = leadingZeros; i < str.length; i++) {
+        const char = str[i];
+        const index = ALPHABET.indexOf(char);
+        if (index === -1) throw new Error('Invalid base58 character');
+        num = num * 58n + BigInt(index);
+    }
+    // 转换为字节数组
+    const hex = num.toString(16);
+    const bytes = new Uint8Array(leadingZeros + Math.ceil(hex.length / 2));
+    // 填充前导零
+    for (let i = 0; i < leadingZeros; i++) {
+        bytes[i] = 0;
+    }
+    // 填充十六进制数据（确保偶数长度）
+    const paddedHex = (hex.length % 2 === 0) ? hex : '0' + hex;
+    for (let i = 0; i < paddedHex.length; i += 2) {
+        const byte = paddedHex.substr(i, 2);
+        bytes[leadingZeros + Math.floor(i / 2)] = parseInt(byte, 16);
+    }
+    return bytes;
+}
+
+function wordArrayToUint8Array(wa) {
+    const u8 = new Uint8Array(wa.sigBytes);
+    for (let i = 0; i < wa.sigBytes; i++) u8[i] = (wa.words[i >>> 2] >>> (24 - (i % 4) * 8)) & 0xff;
+    return u8;
+}
+
+function sha256(hex) { return CryptoJS.SHA256(CryptoJS.enc.Hex.parse(hex)).toString(CryptoJS.enc.Hex); }
+
+function generateWIF(hex, compressed = true) {
+    const payload = '80' + hex + (compressed ? '01' : '');
+    const checksum = sha256(sha256(payload)).slice(0,8);
+    return base58Encode(hexToBytes(payload + checksum));
+}
+
+function generateAddress(pubHex, compressed = true) {
+    const sha = CryptoJS.SHA256(CryptoJS.enc.Hex.parse(pubHex));
+    const ripemd = CryptoJS.RIPEMD160(sha);
+    const hash160 = wordArrayToUint8Array(ripemd);
+    const versioned = new Uint8Array([0x00, ...hash160]);
+    const checksum = sha256(sha256(Array.from(versioned).map(b=>b.toString(16).padStart(2,'0')).join(''))).slice(0,8);
+    return base58Encode(new Uint8Array([...versioned, ...hexToBytes(checksum)]));
+}
+
+function hexToBytes(hex) {
+    return hex.match(/.{2}/g).map(b => parseInt(b,16));
+}
+
+function bytesToHex(u8) {
+    return Array.from(u8).map(b => b.toString(16).padStart(2,'0')).join('');
+}
+
+function deriveResultFromKeyPair(keyPair, compressed) {
+    const privHex = keyPair.getPrivate('hex').padStart(64, '0');
+    const pubHex = keyPair.getPublic(compressed, 'hex');
+    return {
+        privHex,
+        address: generateAddress(pubHex, compressed),
+        wif: generateWIF(privHex, compressed)
+    };
+}
+
+function generateOldModeKeyPair(ec) {
+    if (Math.random() >= 0.90) {
+        return ec.genKeyPair();
+    }
+    for (let i = 0; i < 16; i++) {
+        const privHex = randomLowPrivateHex(ec);
+        try {
+            return ec.keyFromPrivate(privHex, 'hex');
+        } catch {}
+    }
+    return ec.genKeyPair();
+}
+
+function buildOldModeResult(ec) {
+    for (let attempt = 0; attempt < 8; attempt++) {
+        const keyPair = generateOldModeKeyPair(ec);
+        const legacy = deriveResultFromKeyPair(keyPair, false);
+        const modern = deriveResultFromKeyPair(keyPair, true);
+        try {
+            decodeWIFPayload(legacy.wif, ec);
+            decodeWIFPayload(modern.wif, ec);
+            return {
+                privHex: legacy.privHex,
+                uncompressed: legacy,
+                compressed: modern
+            };
+        } catch {}
+    }
+    const fallbackKey = ec.genKeyPair();
+    const fallbackLegacy = deriveResultFromKeyPair(fallbackKey, false);
+    const fallbackModern = deriveResultFromKeyPair(fallbackKey, true);
+    return {
+        privHex: fallbackLegacy.privHex,
+        uncompressed: fallbackLegacy,
+        compressed: fallbackModern
+    };
+}
+
+function randomLowPrivateHex(ec) {
+    while (true) {
+        const buf = new Uint8Array(32);
+        const low = crypto.getRandomValues(new Uint8Array(26));
+        buf.set(low, 6);
+        const hex = bytesToHex(buf);
+        const num = BigInt('0x' + hex);
+        if (num === 0n || num >= ec.n) continue;
+        return hex;
+    }
+}
+
+function decodeWIFPayload(wif, ecInstance) {
+    const decoded = base58Decode(wif);
+    if (!decoded || decoded.length < 37) throw new Error('无效的 WIF');
+
+    const payload = decoded.slice(0, decoded.length - 4);
+    const checksum = decoded.slice(decoded.length - 4);
+    const checksumHex = sha256(sha256(bytesToHex(payload))).slice(0, 8);
+    if (!arraysEqual(checksum, hexToBytes(checksumHex))) throw new Error('WIF 校验和错误');
+    if (payload[0] !== 0x80) throw new Error('WIF 版本错误');
+
+    let compressed = false;
+    let privBytes = payload.slice(1, 33);
+    if (payload.length === 34 && payload[33] === 0x01) {
+        compressed = true;
+    } else if (payload.length !== 33) {
+        throw new Error('WIF 长度异常');
+    }
+
+    const privHex = bytesToHex(privBytes);
+    const ec = ecInstance || new elliptic.ec('secp256k1');
+    const keyPair = ec.keyFromPrivate(privHex, 'hex');
+    const pubHex = keyPair.getPublic(compressed, 'hex');
+    const address = generateAddress(pubHex, compressed);
+
+    return { privHex, address, compressed };
+}
+
+function arraysEqual(a, b) {
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+    return true;
+}
+
+// ==================== 余额查询（你原来的） ====================
+const APIS = [
+    { url: a => `https://blockstream.info/api/address/${a}`, parse: d => ({b: (d.chain_stats?.funded_txo_sum - d.chain_stats?.spent_txo_sum)/1e8 || 0, t: d.chain_stats?.tx_count || 0}), useProxy: false },
+    { url: a => `https://api.allorigins.win/raw?url=${encodeURIComponent(`https://blockstream.info/api/address/${a}`)}`, parse: d => {try{const j=JSON.parse(d);return {b:(j.chain_stats?.funded_txo_sum-j.chain_stats?.spent_txo_sum)/1e8||0,t:j.chain_stats?.tx_count||0}}catch(e){return {b:0}}}, useProxy: true },
+    { url: a => `https://api.allorigins.win/raw?url=${encodeURIComponent(`https://blockchain.info/rawaddr/${a}`)}`, parse: d => {try{const j=JSON.parse(d);return {b:j.final_balance/1e8||0,t:j.n_tx||0}}catch(e){return {b:0}}}, useProxy: true }
+];
+
+async function queryBalance(addr) {
+    for (const api of APIS) {
+        try {
+            const r = await fetch(api.url(addr), { signal: AbortSignal.timeout?.(10000) });
+            if (r.ok) {
+                const data = api.useProxy ? JSON.parse(await r.text()) : await r.json();
+                const res = api.parse(data);
+                if (res && res.b !== undefined) return {balance: res.b, tx: res.t};
+            }
+        } catch(e) {}
+    }
+    return {balance: 0, tx: 0};
+}
+
+// ==================== UI 函数（修改 addFound 支持报警） ====================
+function startGenerating() {
+    isGenerating = true; attempts = 0; found = []; startTime = Date.now(); window.lastSpeedUpdate = startTime;
+    document.getElementById('status').textContent = '生成中...';
+    document.getElementById('results').innerHTML = '';
+    document.getElementById('startBtn').disabled = true;
+    document.getElementById('stopBtn').disabled = false;
+    generateLoop();
+}
+
+function stopGenerating() {
+    isGenerating = false;
+    if (rafId) cancelAnimationFrame(rafId);
+    document.getElementById('status').textContent = '已停止';
+    document.getElementById('startBtn').disabled = false;
+    document.getElementById('stopBtn').disabled = true;
+}
+
+function clearResults() {
+    found = []; document.getElementById('results').innerHTML = '';
+}
+
+async function copyText(text) {
+    try { await navigator.clipboard.writeText(text); alert('已复制！'); }
+    catch { alert('复制失败，请手动选择'); }
+}
+
+function addFound(item, isAlarm = false) {
+    const div = document.createElement('div'); 
+    div.className = isAlarm ? 'alarm' : 'found';
+    const balanceSpan = document.createElement('div'); balanceSpan.innerHTML = '查询余额中...';
+
+    let content;
+    if (item.isAlarm) {
+        content = `
+            <strong>🚨 报警！碰撞到知名沉睡地址！</strong><br>
+            <span class="old-style">立即停止生成！请检查私钥安全！</span><br>
+            地址: <span class="highlight">${item.address}</span><br>
+            WIF: <span class="highlight">${item.wif}</span><br>
+            <button onclick="copyText('${item.wif}')">复制 WIF</button>
+            <button onclick="copyText('${item.address}')">复制地址</button>
+        `;
+    } else if (item.isOld) {
+        content = `
+            <strong>老鲸地址生成成功！</strong><br>
+            <span class="old-style">使用未压缩公钥，模拟2009老式地址。</span><br>
+            老派地址(未压缩): <span class="highlight">${item.address}</span><br>
+            传统 WIF (5 开头): <span class="highlight">${item.wif}</span><br>
+            <button onclick="copyText('${item.wif}')">复制 WIF</button>
+            <button onclick="copyText('${item.address}')">复制地址</button>
+            <br><span class="old-style">提示：若钱包导入后显示不同地址，请确认使用了对应的 WIF。</span>
+        `;
+    } else {
+        content = `
+            <strong>Vanity 地址生成成功！</strong><br>
+            地址: <span class="highlight">${item.address}</span><br>
+            WIF: <span class="highlight">${item.wif}</span><br>
+            <button onclick="copyText('${item.wif}')">复制 WIF</button>
+            <button onclick="copyText('${item.address}')">复制地址</button>
+        `;
+    }
+
+    div.innerHTML = content;
+    div.appendChild(document.createElement('br'));
+    div.appendChild(balanceSpan);
+    document.getElementById('results').prepend(div);
+
+    queryBalance(item.address).then(res => {
+        if (res.balance > 0) {
+            balanceSpan.innerHTML = `<span class="balance-positive">暴富了！余额 ${res.balance.toFixed(8)} BTC！</span>`;
+            const blob = new Blob([`暴富地址！\n地址: ${item.address}\nWIF: ${item.wif}\n余额: ${res.balance} BTC\n时间: ${new Date().toLocaleString()}`], {type:'text/plain'});
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a'); a.href = url; a.download = `RICH_${item.address.substring(0,10)}.txt`; a.click();
+            URL.revokeObjectURL(url);
+        } else {
+            balanceSpan.innerHTML = '余额 0 BTC';
+        }
+    });
+}
+</script>
+</body>
+</html>
